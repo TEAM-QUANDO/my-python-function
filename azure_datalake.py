@@ -1,10 +1,13 @@
 import os
 import json
+import re
 import pandas as pd
 from io import StringIO
-
+from pypika import Query, Field, Column, Criterion
+from pypika import Table as pTable
 from azure.storage.filedatalake import DataLakeServiceClient
 from azure.storage.filedatalake import DelimitedTextDialect, DelimitedJsonDialect
+
 
 class AzureDatalakeV2():
     def __init__(self, account_name: str, account_key: str, container_name: str):
@@ -109,3 +112,224 @@ class AzureDatalakeV2():
         df[dt_columns.columns] = dt_columns.apply(
             lambda x: x.dt.strftime('%Y-%m-%dT%H:%M:%S+00:00'))
         return df
+
+'''
+def query_video_analyzer_room_time_range(client, filename, start, end=None):
+    start = start.tz_convert("UTC")
+    end = start if end is None else end.tz_convert("UTC")
+    sql_expr = QueryBuilder("create_time").timestamp_between(start, end)
+    data = client.query_log_to_json(sql_expr, filename)
+    return data
+
+def query_video_analyzer_participant_time_range(client, filename, start, end=None):
+    start = start.tz_convert("UTC")
+    end = start if end is None else end.tz_convert("UTC")
+    sql_expr = QueryBuilder("join_time").timestamp_between(start, end)
+    data = client.query_log_to_json(sql_expr, filename)
+    return data
+
+def query_video_analyzer_callhistory_time_range(client, filename, start, end=None):
+    start = start.tz_convert("UTC")
+    end = start if end is None else end.tz_convert("UTC")
+    sql_expr = QueryBuilder("create_time").timestamp_between(start, end)
+    data = client.query_log_to_json(sql_expr, filename)
+    return data
+
+def query_video_analyzer_participant_info_time_range(client, filename, start, end=None):
+    start = start.tz_convert("UTC")
+    end = start if end is None else end.tz_convert("UTC")
+    sql_expr = QueryBuilder("join_time").timestamp_between(start, end)
+    data = client.query_log_to_json(sql_expr, filename)
+    return data
+'''
+
+class QueryBuilder(str):
+    def __init__(self, value="*"):
+        pass
+
+    def __new__(cls, value="*"):
+        if value == "*":
+            value = "SELECT * FROM BlobStorage"
+        return super().__new__(cls, value)
+
+    def timestamp_between(self, start, end, selected_vars="*"):
+        # filter condition
+        after = self.__to_timestamp(start)
+        before = end + datetime.timedelta(days=1)
+        before = self.__to_timestamp(before)
+
+        # build SQL query expression
+        table = pTable("BlobStorage")
+        selected_vars = self.__parse_select_vars(selected_vars)
+        query = Query.from_(table).select(*selected_vars).where(
+            (table[self.__as_timestamp()] > Field(after)) &
+            (table[self.__as_timestamp()] < Field(before))
+        ).get_sql()
+        return self.__parse_str(query)
+
+    def timestamp_after(self, after, selected_vars="*"):
+        table = pTable("BlobStorage")
+        selected_vars = self.__parse_select_vars(selected_vars)
+        after = self.__to_timestamp(after)
+        query = Query.from_(table).select(*selected_vars).where(
+            table[self.__as_timestamp()] > Field(after)
+        ).get_sql()
+        return self.__parse_str(query)
+
+    def timestamp_before(self, before, selected_vars="*"):
+        table = pTable("BlobStorage")
+        before = self.__to_timestamp(before)
+        selected_vars = self.__parse_select_vars(selected_vars)
+        query = Query.from_(table).select(*selected_vars).where(
+            table[self.__as_timestamp()] < Field(before)
+        ).get_sql()
+        return self.__parse_str(query)
+
+    def between(self, lower, upper, selected_vars="*"):
+        table = pTable("BlobStorage")
+        selected_vars = self.__parse_select_vars(selected_vars)
+        query = Query.from_(table).select(*selected_vars).where(
+            (table[self] > lower) &
+            (table[self] <= upper)
+        ).get_sql()
+        return self.__parse_str(query)
+
+    def gt(self, value, selected_vars="*"):
+        table = pTable("BlobStorage")
+        selected_vars = self.__parse_select_vars(selected_vars)
+        query = Query.from_(table).select(*selected_vars).where(
+            (table[self] > value)
+        ).get_sql()
+        return self.__parse_str(query)
+
+    def lt(self, value, selected_vars="*"):
+        table = pTable("BlobStorage")
+        selected_vars = self.__parse_select_vars(selected_vars)
+        query = Query.from_(table).select(*selected_vars).where(
+            (table[self] < value)
+        ).get_sql()
+        return self.__parse_str(query)
+
+    def ge(self, value, selected_vars="*"):
+        table = pTable("BlobStorage")
+        selected_vars = self.__parse_select_vars(selected_vars)
+        query = Query.from_(table).select(*selected_vars).where(
+            (table[self] >= value)
+        ).get_sql()
+        return self.__parse_str(query)
+
+    def le(self, value, selected_vars="*"):
+        table = pTable("BlobStorage")
+        selected_vars = self.__parse_select_vars(selected_vars)
+        query = Query.from_(table).select(*selected_vars).where(
+            (table[self] <= value)
+        ).get_sql()
+        return self.__parse_str(query)
+
+    def isin(self, having, selected_vars="*"):
+        table = pTable('BlobStorage')
+        selected_vars = self.__parse_select_vars(selected_vars)
+        query = Query.from_(table).select(*selected_vars).where(
+            table[self]
+        ).isin(having).get_sql()
+        return self.__parse_str(query)
+
+    def contains(self, contain_list, selected_vars="*"):
+        table = pTable("BlobStorage")
+        selected_vars = self.__parse_select_vars(selected_vars)
+        query = Query.from_(table).select(*selected_vars).where(
+            table[self]
+        ).like(contain_list).get_sql()
+
+        # index position of WHERE statement
+        WHERE_index = query.find("WHERE")
+
+        # grab column name (find open and close quotation mark)
+        open_x = WHERE_index + 6
+        close_x = (open_x + 1) + query[open_x + 1:].find("\"") + 1
+        colname = query[open_x:close_x]
+
+        # list of matching list
+        open_x = query.find("[")
+        close_x = (open_x + 1) + query[open_x + 1:].find("]") + 1
+        contain_list = query[open_x + 1:close_x - 1].split(",")
+
+        # foramt matching list into statement
+        contain_expr = []
+        for contain in contain_list:
+            contain_expr.append("{0} LIKE {1}".format(colname, contain))
+        query = "{}".format(query[:WHERE_index + len("WHERE") + 1])
+
+        # rewrite query expression
+        for item in contain_expr:
+            query += "{} OR ".format(item)
+
+        # remove "OR " at the end
+        query = query[:-4]
+        return self.__parse_str(query)
+
+    def all(self, condition_list, selected_vars="*"):
+        table = pTable("BlobStorage")
+        locs = locals()
+        selected_vars = self.__parse_select_vars(selected_vars)
+        query = Query.from_(table).select(*selected_vars).where(
+            Criterion.all([
+                eval(condition, locs) for condition in condition_list
+            ])
+        ).get_sql()
+        query = self.__parse_timestamp(query)
+        return self.__parse_str(query)
+
+    def any(self, condition_list, selected_vars="*"):
+        table = pTable("BlobStorage")
+        locs = locals()
+        selected_vars = self.__parse_select_vars(selected_vars)
+        query = Query.from_(table).select(*selected_vars).where(
+            Criterion.any([
+                eval(condition, locs) for condition in condition_list
+            ])
+        ).get_sql()
+        query = self.__parse_timestamp(query)
+        return self.__parse_str(query)
+
+    def __parse_timestamp(self, expr):
+        regex = re.compile(r'[0-9]*-[0-9][0-9]-[0-9][0-9]', re.S)
+        expr = regex.sub(lambda m: pd.to_datetime(m.group()).strftime(
+            "TO_TIMESTAMP(\'%Y-%m-%dT%H:%M:%S+00:00\')"), expr)
+        regex = re.compile(r'\'TO_TIMESTAMP', re.S)
+        expr = regex.sub(lambda m: m.group().replace(
+            '\'TO_TIMESTAMP', "TO_TIMESTAMP"), expr)
+        expr = re.sub(r'\)\'', ")", expr)
+        return expr
+
+    def __parse_select_vars(self, selected_vars):
+        if not isinstance(selected_vars, str):
+            selected_vars = [Column(item) for item in selected_vars]
+        else:
+            selected_vars = [Column(item) for item in ["*"]]
+        return selected_vars
+
+    def __to_timestamp(self, datetime, timezone="+00:00"):
+        # if timezone information is not specified, it is assumed to be UTC
+        if datetime.tzinfo is None:
+            return "TO_TIMESTAMP('{0}{1}')".format(datetime.isoformat(), timezone)
+        else:
+            return "TO_TIMESTAMP('{}')".format(datetime.isoformat())
+
+    def __as_timestamp(self):
+        return "CAST(\"{0}\" AS TIMESTAMP)".format(self)
+
+    def __parse_str(self, sql_expr):
+        regex = re.compile('"[A-Z_]*\(', re.S)
+        sql_expr = regex.sub(lambda m: m.group().replace('"', ""), sql_expr)
+        regex = re.compile('[A-Z]*\)"', re.S)
+        sql_expr = regex.sub(lambda m: m.group().replace('"', ""), sql_expr)
+
+        regex = re.compile('[A-Z][A-Z]*\"', re.S)
+        sql_expr = regex.sub(lambda m: m.group().replace('"', ""), sql_expr)
+
+        # SELECT "*" -> SELECT *
+        regex = re.compile('"\*"', re.S)
+        sql_expr = regex.sub(lambda m: m.group().replace('"*"', "*"), sql_expr)
+
+        return sql_expr
