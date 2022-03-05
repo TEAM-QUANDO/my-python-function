@@ -1,7 +1,9 @@
 import os
 import json
 import re
+import numpy as np
 import pandas as pd
+from datetime import datetime
 from io import StringIO
 from pypika import Query, Field, Column, Criterion
 from pypika import Table as pTable
@@ -17,11 +19,11 @@ class AzureDatalakeV2():
         )
         self.container = self.conn.get_file_system_client(container_name)
 
-    def save_binary_file(self, path_to_store_to: str, path_to_local_file: str):
+    def write_binary(self, outfile: str, infile: str):
         # extract filename and directory to be saved the cloud
-        path = path_to_store_to.replace(os.sep, "/").split("/")[:-1]
+        path = outfile.replace(os.sep, "/").split("/")[:-1]
         filepath_to_store_to = os.path.join(*path) if len(path) else "./"
-        filename = os.path.normpath(path_to_store_to).split(os.sep)[-1]
+        filename = os.path.normpath(outfile).split(os.sep)[-1]
 
         # create or get directory client
         directory_client = self.container.get_directory_client(
@@ -29,18 +31,18 @@ class AzureDatalakeV2():
 
         # upload file
         file_client = directory_client.create_file(filename)
-        with open(path_to_local_file, "rb") as data:
+        with open(infile, "rb") as data:
             size = os.fstat(data.fileno()).st_size
             file_client.append_data(data, offset=0, length=size)
 
         # flush data once the process is completed
         return file_client.flush_data(size)
 
-    def store_file_from_memory(self, path_to_store_to, memstring, metadata=None):
+    def write_bytes(self, outfile: str, memstring: str, metadata=None):
         # extract filename and directory to be saved the cloud
-        path = path_to_store_to.replace("\\", "/").split("/")[:-1]
+        path = outfile.replace(os.sep, "/").split("/")[:-1]
         filepath_to_store_to = os.path.join(*path) if len(path) else "./"
-        filename = os.path.normpath(path_to_store_to).split(os.sep)[-1]
+        filename = os.path.normpath(outfile).split(os.sep)[-1]
 
         # create or get directory client
         directory_client = self.container.get_directory_client(
@@ -54,36 +56,40 @@ class AzureDatalakeV2():
         # flush data once the process is completed
         return file_client.flush_data(len(memstring.encode("utf-8")))
 
-    def save_dataframe(self, filepath: str, data: pd.DataFrame, overwrite=False):
+    def write_dataframe(self, filepath: str, data: pd.DataFrame, append=False):
         file_client = self.container.get_file_client(
             filepath.replace(os.sep, "/"))
         data = self.__normalize_timestamp__(data)
-        if overwrite:
-            data = data.to_csv(index=False, header=True)
-            file_client.create_file()
-            return self.store_file_from_memory(filepath, data)
-        else:
-            data = data.to_csv(index=False, header=False)
+        if append:       
+            data: str = data.to_csv(index=False, header=False)
             # offset size must be known
             offset = file_client.get_file_properties()['size']
             file_client.append_data(data, offset)
 
             # upload data to cloud
             return file_client.flush_data(offset + len(data.encode("utf-8")))
+        else:
+            data = data.to_csv(index=False, header=True)
+            file_client.create_file()
+            return self.write_bytes(filepath, data)
 
-    def read_dataframe_as_bytes(self, filepath: str) -> bytes:
+    def read_bytes(self, filepath: str) -> bytes:
         file_client = self.container.get_file_client(
             filepath.replace(os.sep, "/"))
         return file_client.download_file().readall()
 
-    def read_dataframe(self, filepath, sep=',', engine='python', index_col=None, parse_dates=None):
-        data = self.read_dataframe_as_bytes(filepath)
+    def read_image(self, filepath: str) -> np.ndarray:
+        data = self.read_bytes(filepath)
+        return np.frombuffer(data, np.uint8)
+
+    def read_dataframe(self, filepath, sep=',', engine='python', index_col=None, parse_dates=None) -> pd.DataFrame:
+        data = self.read_bytes(filepath)
         if isinstance(data, (bytes, bytearray)):
             data = data.decode()
 
         return pd.read_csv(StringIO(data), sep=sep, engine=engine, index_col=index_col, parse_dates=parse_dates)
 
-    def query_dataframe_as_json(self, sql_query: str, filepath: str):
+    def query_csv(self, sql_query: str, filepath: str):
         file_client = self.container.get_file_client(
             filepath.replace(os.sep, "/"))
 
@@ -112,6 +118,7 @@ class AzureDatalakeV2():
         df[dt_columns.columns] = dt_columns.apply(
             lambda x: x.dt.strftime('%Y-%m-%dT%H:%M:%S+00:00'))
         return df
+
 
 '''
 def query_video_analyzer_room_time_range(client, filename, start, end=None):
