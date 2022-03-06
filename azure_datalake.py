@@ -11,13 +11,18 @@ from azure.storage.filedatalake import DataLakeServiceClient
 from azure.storage.filedatalake import DelimitedTextDialect, DelimitedJsonDialect
 
 
-class AzureDatalakeV2():
+class AzureDatalake():
     def __init__(self, account_name: str, account_key: str, container_name: str):
         self.conn = DataLakeServiceClient(
             account_url=f"https://{account_name}.dfs.core.windows.net",
             credential=account_key
         )
         self.container = self.conn.get_file_system_client(container_name)
+
+    def blob_exists(self, filepath: str) -> bool:
+        filepath = filepath.replace(os.sep, "/")
+        file_client = self.container.get_file_client(filepath)
+        return file_client.exists()
 
     def write_binary(self, outfile: str, infile: str):
         # extract filename and directory to be saved the cloud
@@ -60,7 +65,7 @@ class AzureDatalakeV2():
         file_client = self.container.get_file_client(
             filepath.replace(os.sep, "/"))
         data = self.__normalize_timestamp__(data)
-        if append:       
+        if append:
             data: str = data.to_csv(index=False, header=False)
             # offset size must be known
             offset = file_client.get_file_properties()['size']
@@ -106,17 +111,19 @@ class AzureDatalakeV2():
         return content
 
     def __normalize_timestamp__(self, df: pd.DataFrame) -> pd.DataFrame:
-        # convert to utc
         dt_columns = df.select_dtypes('datetimetz')
-        df[dt_columns.columns] = dt_columns.apply(
-            lambda x: x.dt.tz_convert('utc'))
-        dt_columns = df.select_dtypes('datetime64')
-        df[dt_columns.columns] = dt_columns.apply(
-            lambda x: pd.to_datetime(x, utc=True))
+        if len(dt_columns):
+            df[dt_columns.columns] = dt_columns.apply(
+                lambda x: x.dt.tz_convert('utc'))
+            df[dt_columns.columns] = dt_columns.apply(
+                lambda x: x.dt.strftime('%Y-%m-%dT%H:%M:%S+00:00'))
 
-        # it has to be in this format when query timestamp
-        df[dt_columns.columns] = dt_columns.apply(
-            lambda x: x.dt.strftime('%Y-%m-%dT%H:%M:%S+00:00'))
+        dt_columns = df.select_dtypes('datetime64')
+        if len(dt_columns):
+            df[dt_columns.columns] = dt_columns.apply(
+                lambda x: pd.to_datetime(x, utc=True))
+            df[dt_columns.columns] = dt_columns.apply(
+                lambda x: x.dt.strftime('%Y-%m-%dT%H:%M:%S+00:00'))
         return df
 
 
@@ -149,6 +156,7 @@ def query_video_analyzer_participant_info_time_range(client, filename, start, en
     data = client.query_log_to_json(sql_expr, filename)
     return data
 '''
+
 
 class QueryBuilder(str):
     def __init__(self, value="*"):
