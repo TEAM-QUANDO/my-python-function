@@ -11,20 +11,44 @@ from azure.storage.filedatalake import DataLakeServiceClient
 from azure.storage.filedatalake import DelimitedTextDialect, DelimitedJsonDialect
 
 
-class AzureDatalake():
-    def __init__(self, account_name: str, account_key: str, container_name: str):
-        self.conn = DataLakeServiceClient(
-            account_url=f"https://{account_name}.dfs.core.windows.net",
-            credential=account_key
-        )
-        self.container = self.conn.get_file_system_client(container_name)
+class AzureDatalakeV2():
+    def __init__(self, account_name: str = None, account_key: str = None, container_name: str = None, conn_str: str = None):
+        self.conn = None
+        self.container = None
+        if conn_str is not None:
+            self.conn = DataLakeServiceClient.from_connection_string(
+                conn_str=conn_str)
+            self.container = self.conn.get_file_system_client(container_name)
+        else:
+            self.conn = DataLakeServiceClient(
+                account_url=f"https://{account_name}.dfs.core.windows.net",
+                credential=account_key
+            )
+            self.container = self.conn.get_file_system_client(container_name)
 
     def blob_exists(self, filepath: str) -> bool:
+        """指定したファイルが存在するか確認する
+
+        Args:
+            filepath (str): ファイルパス
+
+        Returns:
+            bool: 存在する場合はTRUE、しない場合はFALSE
+        """
         filepath = filepath.replace(os.sep, "/")
         file_client = self.container.get_file_client(filepath)
         return file_client.exists()
 
     def write_binary(self, outfile: str, infile: str):
+        """指定したファイルをバイナリファイルでストレージにアップロードする
+
+        Args:
+            outfile (str): ストレージのパス
+            infile (str): ローカルファイルのパス
+
+        Returns:
+            _type_: ストレージのヘッダー情報
+        """
         # extract filename and directory to be saved the cloud
         path = outfile.replace(os.sep, "/").split("/")[:-1]
         filepath_to_store_to = os.path.join(*path) if len(path) else "./"
@@ -44,6 +68,16 @@ class AzureDatalake():
         return file_client.flush_data(size)
 
     def write_bytes(self, outfile: str, memstring: str, metadata=None):
+        """文字列データをストレージにアップロードする
+
+        Args:
+            outfile (str): ストレージのパス
+            memstring (str): 文字列データ
+            metadata (_type_, optional): メタデータ. Defaults to None.
+
+        Returns:
+            _type_: ストレージのヘッダー情報
+        """
         # extract filename and directory to be saved the cloud
         path = outfile.replace(os.sep, "/").split("/")[:-1]
         filepath_to_store_to = os.path.join(*path) if len(path) else "./"
@@ -62,6 +96,16 @@ class AzureDatalake():
         return file_client.flush_data(len(memstring.encode("utf-8")))
 
     def write_dataframe(self, filepath: str, data: pd.DataFrame, append=False):
+        """Pandasデータフレームをストレージにアップロードする
+
+        Args:
+            filepath (str): ストレージのパス
+            data (pd.DataFrame): pandasデータフレーム
+            append (bool, optional): TRUEは追記、FALSEは書き込み. デファクトはFALSE
+
+        Returns:
+            _type_: ストレージのヘッダー情報
+        """
         file_client = self.container.get_file_client(
             filepath.replace(os.sep, "/"))
         data = self.__normalize_timestamp__(data)
@@ -79,11 +123,27 @@ class AzureDatalake():
             return self.write_bytes(filepath, data)
 
     def read_bytes(self, filepath: str) -> bytes:
+        """ストレージ上のファイルをダウンロード
+
+        Args:
+            filepath (str): ファイルのパス
+
+        Returns:
+            bytes: バイナリデータ
+        """
         file_client = self.container.get_file_client(
             filepath.replace(os.sep, "/"))
         return file_client.download_file().readall()
 
     def read_image(self, filepath: str) -> np.ndarray:
+        """ストレージ上の画像を読み込み
+
+        Args:
+            filepath (str): ファイルパス
+
+        Returns:
+            np.ndarray: Numpy行列
+        """
         data = self.read_bytes(filepath)
         return np.frombuffer(data, np.uint8)
 
@@ -116,14 +176,14 @@ class AzureDatalake():
             df[dt_columns.columns] = dt_columns.apply(
                 lambda x: x.dt.tz_convert('utc'))
             df[dt_columns.columns] = dt_columns.apply(
-                lambda x: x.dt.strftime('%Y-%m-%dT%H:%M:%S+00:00'))
+                lambda x: x.dt.strftime("%Y-%m-%dT%H:%M:%S+00:00"))
 
         dt_columns = df.select_dtypes('datetime64')
         if len(dt_columns):
             df[dt_columns.columns] = dt_columns.apply(
                 lambda x: pd.to_datetime(x, utc=True))
             df[dt_columns.columns] = dt_columns.apply(
-                lambda x: x.dt.strftime('%Y-%m-%dT%H:%M:%S+00:00'))
+                lambda x: x.dt.strftime("%Y-%m-%dT%H:%M:%S+00:00"))
         return df
 
 
